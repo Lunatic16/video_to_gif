@@ -38,23 +38,6 @@ Most "video → GIF" one-liners produce 20 MB of muddy, stuttering pixels.
 
 ---
 
-## 📋 Table of Contents
-
-- [Requirements](#-requirements)
-- [Installation](#-installation)
-- [Quick Start](#-quick-start)
-- [Cookbook](#-cookbook-recipes)
-- [Options Reference](#-options-reference)
-- [Quality Presets](#-quality-presets)
-- [Configuration File](#%EF%B8%8F-configuration-file)
-- [How It Works](#-how-it-works)
-- [Piping & Exit Codes](#-piping--exit-codes)
-- [FAQ](#-faq)
-- [Contributing](#-contributing)
-- [License](#-license)
-
----
-
 ## 🔧 Requirements
 
 | | Requirement | What it unlocks |
@@ -407,8 +390,3 @@ and include an example command in the description.
 ## 📄 License
 
 MIT — see [LICENSE](LICENSE).
-
-<div align="center">
-<sub>If this tool saved you a Premiere round-trip, consider leaving a ⭐</sub>
-</div>
-# video_to_gif
