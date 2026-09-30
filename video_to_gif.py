@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import copy
 import functools
 import json
 import math
@@ -279,8 +280,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="duration (default: to end)")
     g.add_argument("-e", "--end", type=t_time, metavar="TIME", help="end time (alternative to --duration)")
     g.add_argument("-r", "--fps", type=t_positive_float, default=15.0, help="frames per second (default: 15)")
+    g.add_argument("--match-fps", action="store_true",
+                   help="use the source video's frame rate (overrides --fps)")
     g.add_argument("-w", "--width", type=int, default=480, metavar="PX",
                    help="output width; never upscales; 0 or -1 keeps source width (default: 480)")
+    g.add_argument("--match-size", action="store_true",
+                   help="keep the source's original dimensions, no scaling (overrides --width; "
+                        "applies to the cropped picture if --crop/--auto-crop is used)")
     g.add_argument("-l", "--loop", type=int, default=0, metavar="N",
                    help="0 = loop forever, -1 = play once, N = repeat N extra times "
                         "(GIF/WebP/APNG; ignored for mp4)")
@@ -470,6 +476,19 @@ class Source:
     width: int
     height: int
     duration: float | None
+    fps: float | None = None
+
+
+def _rate(v: object) -> float | None:
+    """ffprobe frame rates look like '30000/1001'; '0/0' means unknown."""
+    try:
+        num, _, den = str(v).partition("/")
+        r = float(num) / float(den or 1)
+    except (ValueError, ZeroDivisionError):
+        return None
+    if not (r > 0 and math.isfinite(r)):
+        return None
+    return float(round(r)) if abs(r - round(r)) < 0.005 else round(r, 3)
 
 
 def _float_or_none(v: object) -> float | None:
@@ -482,7 +501,8 @@ def _float_or_none(v: object) -> float | None:
 def probe(path: Path) -> Source:
     r = _tracked_run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=width,height,duration:stream_tags=rotate:stream_side_data=rotation:format=duration",
+         "-show_entries", "stream=width,height,duration,avg_frame_rate,r_frame_rate"
+                          ":stream_tags=rotate:stream_side_data=rotation:format=duration",
          "-of", "json", str(path)],
         capture_output=True)
     if r.returncode != 0:
@@ -509,7 +529,8 @@ def probe(path: Path) -> Source:
     if rot is not None and round(abs(rot)) % 180 == 90:
         w, h = h, w
     dur = _float_or_none(s.get("duration")) or _float_or_none(data.get("format", {}).get("duration"))
-    return Source(w, h, dur)
+    fps = _rate(s.get("avg_frame_rate")) or _rate(s.get("r_frame_rate"))  # avg first: right for VFR
+    return Source(w, h, dur, fps)
 
 
 @functools.lru_cache(maxsize=None)
@@ -581,6 +602,18 @@ def drawtext_filter(job: Job, width: int) -> str:
     return "drawtext=" + ":".join(parts)
 
 
+def scale_filter(job: Job, width: int, even: bool) -> str:
+    """scale filter; with --match-size at native width the height is pinned too, so the
+    output has exactly the source's dimensions (h=-2 would round odd heights to even)."""
+    nw, nh = (job.crop[0], job.crop[1]) if job.crop else (job.src.width, job.src.height)
+    w_out = width - width % 2 if even else width
+    if job.args.match_size and width == nw:
+        h_out = nh - nh % 2 if even else nh
+    else:
+        h_out = -2
+    return f"scale=w={w_out}:h={h_out}:flags=lanczos"
+
+
 def build_graph(job: Job, width: int, fps: float) -> str:
     """Filter graph ending in the [g] pad.
 
@@ -596,8 +629,7 @@ def build_graph(job: Job, width: int, fps: float) -> str:
     if a.speed != 1.0:
         pre.append(f"setpts={1 / a.speed:.6f}*PTS")
     pre.append(f"fps={fps:g}")
-    w_out = width - width % 2 if job.fmt == "mp4" else width  # x264 needs even dims
-    pre.append(f"scale=w={w_out}:h=-2:flags=lanczos")
+    pre.append(scale_filter(job, width, job.fmt == "mp4"))  # x264 needs even dims
 
     graph = f"[0:v]{','.join(pre)}[c0]"
     cur = "c0"
@@ -1170,8 +1202,8 @@ def describe(job: Job, output: Path) -> None:
     a = job.args
     info(f"Input:    {job.inp.name}  ({job.src.width}×{job.src.height})")
     info(f"Output:   {output}  [{job.fmt}]")
-    info(f"FPS:      {a.fps:g}")
-    info(f"Width:    {job.width}px")
+    info(f"FPS:      {a.fps:g}" + ("  (matched to source)" if getattr(a, "fps_matched", False) else ""))
+    info(f"Width:    {job.width}px" + ("  (source size)" if a.match_size and job.width == (job.crop[0] if job.crop else job.src.width) else ""))
     if job.fmt == "gif":
         info(f"Quality:  {a.quality} ({a.colors or QUALITY[a.quality]['colors']} colors, "
              f"dither={dither_spec(a)}, engine={a.engine})")
@@ -1212,6 +1244,7 @@ def describe(job: Job, output: Path) -> None:
 def process(spec: str, args: argparse.Namespace, batch: bool) -> Path | None:
     """Convert one input. Returns the output path (None for --dry-run)."""
     started = time.monotonic()
+    args = copy.copy(args)  # per-input copy: --match-fps/--match-size rewrite fps/width, args is shared by batch threads
     with tempfile.TemporaryDirectory(prefix="video_to_gif_") as tmp:
         workdir = Path(tmp)
         inp, stem, default_dir = resolve_input(spec, workdir, args.dry_run)
@@ -1221,6 +1254,25 @@ def process(spec: str, args: argparse.Namespace, batch: bool) -> Path | None:
         else:
             src = probe(inp)
         fmt = pick_format(args)
+        args.fps_matched = False
+        if args.match_fps:
+            if src.fps:
+                args.fps, args.fps_matched = src.fps, True
+            else:
+                warn(f"Could not determine the source frame rate; keeping --fps {args.fps:g}.")
+            if fmt == "gif" and args.fps > 50:
+                warn(f"Source is {args.fps:g} fps, but GIF delays are whole centiseconds and browsers "
+                     "slow down frames under 20 ms. Use --webp/--mp4, or a lower --fps, for smooth playback.")
+            elif fmt == "gif" and args.engine == "ffmpeg" and args.fps_matched:
+                # the ffmpeg GIF muxer truncates each frame delay to whole centiseconds
+                eff = 100 / max(1, math.floor(100 / args.fps + 1e-9))
+                if abs(eff - args.fps) / args.fps > 0.05:
+                    warn(f"GIF stores frame delays in whole centiseconds, so {args.fps:g} fps will play at "
+                         f"~{eff:.1f} fps. Use --webp/--apng/--mp4 for exact timing.")
+        if args.match_size:
+            args.width = 0
+        if args.max_size and (args.match_fps or args.match_size):
+            warn("--max-size may still lower the width (and fps) below the source values to fit.")
         warn_noops(args, fmt)  # [new] surface silent no-ops early
         # [fix] fail here instead of deep inside palettegen if --start is past the end
         if src.duration is not None and args.start > 0 and args.start >= src.duration:
@@ -1260,6 +1312,11 @@ def process(spec: str, args: argparse.Namespace, batch: bool) -> Path | None:
             crop = detect_crop(inp, src, args)
             info("Auto-crop detected {}x{}+{}+{}".format(*crop) if crop else "Auto-crop: no black bars found.")
 
+        if fmt == "mp4" and args.match_size:
+            nw, nh = (crop[0], crop[1]) if crop else (src.width, src.height)
+            if nw % 2 or nh % 2:
+                warn(f"x264 needs even dimensions: the {nw}×{nh} source will be written as "
+                     f"{nw - nw % 2}×{nh - nh % 2}.")
         base_w = crop[0] if crop else src.width
         width = min(args.width, base_w) if args.width > 0 else base_w
         avail = (src.duration - args.start) if src.duration else None
@@ -1308,7 +1365,7 @@ def process(spec: str, args: argparse.Namespace, batch: bool) -> Path | None:
             vf = []
             if crop:
                 vf.append("crop={}:{}:{}:{}".format(*crop))
-            vf.append(f"scale=w={width}:h=-2:flags=lanczos")
+            vf.append(scale_filter(job, width, False))
             if args.text:
                 vf.append(drawtext_filter(job, width))
             info(f"Preview — extracting one frame at {args.start:g}s...")
