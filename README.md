@@ -60,7 +60,7 @@ brew install ffmpeg          # macOS
 # Windows: winget install Gyan.FFmpeg   (or scoop install ffmpeg)
 
 # 2. Grab the script
-curl -LO https://raw.githubusercontent.com/YOUR_USERNAME/video_to_gif/main/video_to_gif.py
+curl -LO https://raw.githubusercontent.com/Lunatic16/video_to_gif/main/video_to_gif.py
 chmod +x video_to_gif.py
 sudo mv video_to_gif.py /usr/local/bin/video_to_gif   # optional: put it on PATH
 
