@@ -30,7 +30,7 @@ Most "video → GIF" one-liners produce 20 MB of muddy, stuttering pixels.
 - 🎨 **Two-pass palette encoding** — `palettegen` → `paletteuse` for dramatically better colors than single-pass conversion, with full control over palette size and dithering
 - 🔁 **Loop-perfect effects** — `--boomerang` (with pivot-frame de-duplication), `--fade` (crossfades the clip's end into its start), `--reverse`, `--speed`
 - 🎯 **`--max-size` targeting** — tell it *"fit under 10 MB"* and it searches width (then fps) to land on the **widest result that fits** — perfect for Discord, Slack, and forum upload limits
-- ✂️ **Framing** — manual crop, automatic black-bar detection (`cropdetect`), captions with `--text`
+- ✂️ **Framing** — manual crop, automatic black-bar detection (`cropdetect`), captions with `--text`, or keep the source's exact size and frame rate with `--match-size` / `--match-fps`
 - 🚀 **Fast workflows** — batch conversion with parallel jobs (`-j`), stdin/pipe input, URL input via [yt-dlp](https://github.com/yt-dlp/yt-dlp), `--preview` frame extraction, `--dry-run`
 - 🧼 **Clean pipes** — logs go to stderr, only result paths go to stdout, so it composes safely in shell pipelines
 - ⚙️ **Configurable** — your favorite defaults in `~/.config/video_to_gif/config.toml`
@@ -89,6 +89,9 @@ video_to_gif --fade 0.5 --text "when the build passes ✅" clip.mp4
 
 # Ship it: boomerang loop, gifsicle-optimized, under 5 MB
 video_to_gif --boomerang --max-size 5M -O clip.mp4
+
+# Keep the source's exact dimensions and frame rate
+video_to_gif --match-size --match-fps --webp clip.mp4
 
 # Different formats
 video_to_gif --webp -q high clip.mp4      # modern, much smaller
@@ -154,6 +157,18 @@ video_to_gif --auto-crop --max-size 3M screencast.mkv
 </details>
 
 <details>
+<summary><b>Keep the original size and frame rate</b></summary>
+
+```bash
+video_to_gif --match-size --match-fps --webp clip.mp4
+```
+No downscaling and the source's own fps (e.g. 23.976 or 30). Works best with
+`--webp`, `--apng` or `--mp4`; for GIF see the
+[timing note](#-faq) below. Add `--max-size` and the tool may still shrink the
+result to fit.
+</details>
+
+<details>
 <summary><b>Drop into a shell pipeline</b></summary>
 
 ```bash
@@ -186,7 +201,9 @@ video_to_gif clip.mp4 | while read f; do mv "$f" ~/gifs/; done  # stdout = paths
 | `-d, --duration TIME` | Duration |
 | `-e, --end TIME` | End time (alternative to `-d`) |
 | `-r, --fps FPS` | Frames per second (default 15) |
+| `--match-fps` | Use the source video's frame rate; overrides `--fps` (and a config-file `fps`) |
 | `-w, --width PX` | Output width; never upscales; `0`/`-1` = source width |
+| `--match-size` | Keep the source's original dimensions (no scaling); overrides `--width`. With `--crop`/`--auto-crop` it keeps the cropped region at native resolution |
 | `-c, --crop WxH+X+Y` | Crop region before scaling |
 | `--auto-crop` | Detect and trim black bars |
 | `-l, --loop N` | `0` = forever, `-1` = play once, `N` = N extra repeats (ignored for MP4) |
@@ -299,6 +316,13 @@ input ──► crop ──► speed (setpts) ──► fps ──► scale (lan
   `--fade` seconds with `xfade`, producing a perfect crossfade loop.
 - **`--auto-crop`:** runs `cropdetect` over up to two 10 s windows (the start
   of the clip and its middle) and crops to the union of the detected boxes.
+- **`--match-fps` / `--match-size`:** the source's frame rate (average rate, so
+  variable-frame-rate clips are handled) and displayed dimensions are read with
+  ffprobe for each input, so batches of mixed videos each keep their own values.
+  With `--match-size` the output height is pinned as well, so odd sizes such as
+  481×271 come out exactly (MP4 is the exception: x264 needs even dimensions,
+  so it is rounded down and you get a warning). If `--max-size` is also given
+  it still takes priority and may reduce width and fps to fit.
 - **Rotated sources:** rotation metadata (e.g. portrait phone clips) is
   honored, so `--width`, `--crop` and `--auto-crop` work on the picture as it
   is displayed.
@@ -340,6 +364,16 @@ or `--mp4`. If it must be a GIF, combine `-q low` + `-O3 --lossy=60` +
 FFmpeg's `reverse` filter (which both use) buffers every decoded frame in RAM. A 10-second
 1080p clip at 30 fps is roughly a gigabyte. Lower `-r`/`-w`, or shorten the
 clip with `-d`.
+</details>
+
+<details>
+<summary><b>Why doesn't <code>--match-fps</code> give exact timing for GIF?</b></summary>
+
+GIF stores each frame's delay in whole hundredths of a second, and the FFmpeg
+GIF writer rounds them down. A 30 fps source therefore plays at about 33.3 fps,
+and 23.976 fps plays at 25 fps. Sources above 50 fps are worse: browsers slow
+frames shorter than 20 ms down. The tool warns when the difference is over
+5%. For exact timing use `--webp`, `--apng` or `--mp4`.
 </details>
 
 <details>
@@ -390,3 +424,7 @@ and include an example command in the description.
 ## 📄 License
 
 MIT — see [LICENSE](LICENSE).
+
+<div align="center">
+<sub>If this tool saved you a Premiere round-trip, consider leaving a ⭐</sub>
+</div>
